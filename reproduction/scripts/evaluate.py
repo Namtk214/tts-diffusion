@@ -26,6 +26,27 @@ def main():
     a = p.parse_args()
     if a.num_shards < 1 or not 0 <= a.shard_index < a.num_shards or a.limit is not None and a.limit < 1:
         p.error("Invalid shard or limit")
+    # A controller may run in a lightweight environment without PyTorch. Use
+    # the per-metric environments created by setup_environments.py unless the
+    # caller explicitly selected alternatives.
+    metric_environments = {
+        "TTS_EVAL_PYTHON": "eval",
+        "TTS_HPSV3_PYTHON": "hpsv3",
+        "TTS_HPSV2_PYTHON": "hpsv2",
+        "TTS_IMAGEREWARD_PYTHON": "imagereward",
+        "TTS_GENEVAL_PYTHON": "geneval",
+    }
+    for variable, environment in metric_environments.items():
+        default_python = ROOT / ".venvs" / environment / "bin" / "python"
+        if not os.environ.get(variable) and default_python.is_file():
+            os.environ[variable] = str(default_python)
+    # The GPU run keeps Hugging Face snapshots in shared RAM to fit the small
+    # container disk. Match that cache for the separate evaluation worker.
+    if not os.environ.get("HF_HOME") and Path("/dev/shm/tts-hf").is_dir():
+        os.environ["HF_HOME"] = "/dev/shm/tts-hf"
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("TORCH_HOME", str(ROOT / "models" / "torch"))
     a.run_dir = a.run_dir.absolute()
     manifest = read_json(a.run_dir / "run_manifest.json")
     if a.eval_config is None:
