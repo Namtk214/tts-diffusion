@@ -101,7 +101,12 @@ def unary_clip_text_img_t(l_images, device, m_clip, preprocess_clip, target_capt
     b_images = (b_images - _img_mean) / _img_std
 
     if d_cache is None:
-        text_encoding = preprocess_clip.tokenizer(target_caption, return_tensors="pt", padding=True).to(device)
+        # CLIP has a fixed 77-token context. FLUX prompts can be much longer;
+        # truncate only for this auxiliary CLIP reward, as CLIP cannot score
+        # tokens beyond its positional embedding limit.
+        text_encoding = preprocess_clip.tokenizer(
+            target_caption, return_tensors="pt", padding=True, truncation=True, max_length=77
+        ).to(device)
         output = m_clip(pixel_values=b_images, **text_encoding).logits_per_image / m_clip.logit_scale.exp()
         _score = output.view(-1).cpu().numpy()
     else:
