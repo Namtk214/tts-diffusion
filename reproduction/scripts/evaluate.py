@@ -42,10 +42,12 @@ def main():
             os.environ[variable] = str(default_python)
     # The GPU run keeps Hugging Face snapshots in shared RAM to fit the small
     # container disk. Match that cache for the separate evaluation worker.
-    if not os.environ.get("HF_HOME") and Path("/dev/shm/tts-hf").is_dir():
+    # The VM has a host-provided HF_HOME under /workspace, while this run's
+    # pinned snapshots were deliberately cached in shared RAM.
+    if Path("/dev/shm/tts-hf").is_dir():
         os.environ["HF_HOME"] = "/dev/shm/tts-hf"
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ.setdefault("TORCH_HOME", str(ROOT / "models" / "torch"))
     a.run_dir = a.run_dir.absolute()
     manifest = read_json(a.run_dir / "run_manifest.json")
