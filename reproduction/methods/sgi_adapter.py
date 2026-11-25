@@ -5,6 +5,7 @@ from benchmark.common import ROOT
 from methods.assets import cached_model, require_cuda
 from methods.scoring import make_dino_scorer
 from evaluation.efficiency import GenerationMeter
+from methods.memory import PhaseResidency
 
 
 class SGIAdapter:
@@ -24,16 +25,28 @@ class SGIAdapter:
         self.run = run_group_inference
         models = config["model_revisions"]
         self.pipe = FluxPipeline.from_pretrained(cached_model(models["flux"]), torch_dtype=torch.bfloat16,
-                                                 local_files_only=True).to(device)
+                                                 local_files_only=True)
+        shared = config["protocol"] == "single_gpu_768"
+        if not shared:
+            self.pipe.to(device)
+        self.residency = PhaseResidency(self.pipe, device) if shared else None
+        if self.residency:
+            self.residency.install_prompt_encoder()
         self.final_vae = self.pipe.vae if config["generation"]["final_decoder"] == "standard_flux" else None
         self.pipe.vae = AutoencoderTiny.from_pretrained(cached_model(models["tiny_vae"]), torch_dtype=torch.bfloat16,
                                                         local_files_only=True).to(device)
+        if self.final_vae is not None:
+            self.final_vae.to(device)
+            if shared:
+                self.final_vae.enable_slicing()
+        if self.residency:
+            self.residency.load_diffusion()
         clip = CLIPModel.from_pretrained(cached_model(models["clip"]), local_files_only=True).eval().to(device)
         processor = CLIPProcessor.from_pretrained(cached_model(models["clip"]), local_files_only=True)
         dino = AutoModel.from_pretrained(cached_model(models["dino"]), local_files_only=True).eval().to(device)
         self.unary = functools.partial(unary_clip_text_img_t, device=device, m_clip=clip, preprocess_clip=processor)
         self.binary = make_dino_scorer(dino, device)
-        self.metadata = {"scheduler": dict(self.pipe.scheduler.config), "hardware": self.hardware,
+        self.metadata = {"memory_policy": self.residency.metadata() if self.residency else {"policy": "resident"}, "scheduler": dict(self.pipe.scheduler.config), "hardware": self.hardware,
             "noise_policy": "upstream_cpu_generator_per_candidate_seed_plus_index; differs from SatisDive CUDA batched RNG",
             "dino_implementation": "equivalent patchwise dot reduction, float32, microbatch=8",
             "native_status": "public_defaults_paper_resolution_unverified" if config["protocol"] == "native" else "adapted_unified",
@@ -51,7 +64,7 @@ class SGIAdapter:
                 unary_score_fn=self.unary, binary_score_fn=self.binary,
                 starting_candidates=s["initial_candidates"], output_group_size=4,
                 pruning_ratio=s["dropping_ratio"], lambda_score=s["lambda_score"],
-                final_vae=self.final_vae, diagnostics=trace)
+                final_vae=self.final_vae, diagnostics=trace, execution_device=self.device)
         meter.stats["solver_runtime_s"] = sum(r.get("solver", {}).get("runtime_s", 0) for r in trace)
         meter.stats["solver_time_limit_hits"] = sum(r.get("solver", {}).get("time_limit_hit", False) for r in trace)
         return images, {"candidate_ids": trace[-1]["final_candidate_ids"],

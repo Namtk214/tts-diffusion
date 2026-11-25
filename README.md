@@ -1,6 +1,6 @@
 # TTS diffusion: SatisDive và SGI
 
-**Current 768 × 768 experiment:** [Single A100 setup and pilot](reproduction/SINGLE_GPU.md). This profile uses 30 Pick-a-Pic prompts and 30 GenEval prompts (480 final images). GPU validation is pending. The original protocols are documented below.
+**Current 768 × 768 experiment:** [Single A100 setup and pilot](reproduction/SINGLE_GPU.md). This profile uses 30 Pick-a-Pic prompts and 30 GenEval prompts (480 final images). One-prompt pilots of both methods passed on A100 40 GB; full 30 + 30 runs and evaluation remain pending. The original protocols are documented below.
 
 
 Triển khai benchmark theo [hướng dẫn gốc](reproduce_satisdive_sgi.md), chỉ dùng **SatisDive và Scaling Group Inference (SGI), FLUX.1-dev**.

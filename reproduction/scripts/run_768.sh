@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Avoid host-wide thread pools on CPU-limited GPU containers.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
 cd "$(dirname "$0")/.."
 source scripts/env.sh
 case "${1:-main}" in

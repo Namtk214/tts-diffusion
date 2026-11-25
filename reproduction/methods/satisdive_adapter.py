@@ -6,6 +6,7 @@ import sys
 from benchmark.common import ROOT
 from methods.assets import cached_model, require_cuda, prepare_hpsv3_assets
 from evaluation.efficiency import GenerationMeter
+from methods.memory import PhaseResidency
 
 
 class SatisDiveAdapter:
@@ -28,7 +29,9 @@ class SatisDiveAdapter:
         from rewards.clients import RewardClient
         self.run = ours.run_ours_one_prompt
         self.pipe = FluxPipeline.from_pretrained(cached_model(config["model_revisions"]["flux"]),
-                    torch_dtype=torch.bfloat16, local_files_only=True).to(device)
+                    torch_dtype=torch.bfloat16, local_files_only=True)
+        if not self.shared_gpu:
+            self.pipe.to(device)
         # Parameters stay frozen, while autograd through latents and features remains enabled.
         self.pipe.transformer.requires_grad_(False)
         self.pipe.vae.requires_grad_(False)
@@ -37,30 +40,21 @@ class SatisDiveAdapter:
         self.capture = ours._Block12Capture(num_generated_tokens=(b["height"]//16)*(b["width"]//16),
             block_idx=12, grid=1, h_tok=b["height"]//16, w_tok=b["width"]//16)
         self.pipe.transformer.transformer_blocks[12].attn.processor = self.capture
-        # Keep text encoder weights in host RAM between prompts. The GPU
-        # computes the same prompt embeddings once before denoising.
-        if self.shared_gpu:
-            encoders = (self.pipe.text_encoder, self.pipe.text_encoder_2)
-            encode_prompt = self.pipe.encode_prompt
-            for encoder in encoders:
-                encoder.to("cpu")
-            @torch.no_grad()
-            def encode_then_park(*args, **kwargs):
-                try:
-                    for encoder in encoders:
-                        encoder.to(device)
-                    return encode_prompt(*args, **kwargs)
-                finally:
-                    for encoder in encoders:
-                        encoder.to("cpu")
-                    torch.cuda.empty_cache()
-            self.pipe.encode_prompt = encode_then_park
-            torch.cuda.empty_cache()
+        self.residency = PhaseResidency(self.pipe, device) if self.shared_gpu else None
+        self.pipe._tts_batch_rewards = self.shared_gpu
+        if self.residency:
+            self.residency.install_prompt_encoder()
+            self.pipe.vae.enable_gradient_checkpointing()
+            self.pipe.vae.enable_slicing()
+        # Initialize HPSv3 while the entire FLUX pipeline is still on CPU.
         self.client = RewardClient.hpsv3_grad(gpu_id=reward_device, park_model=self.shared_gpu)
+        if self.residency:
+            self.residency.load_diffusion()
         self.metadata = {"scheduler": dict(self.pipe.scheduler.config), "hardware": self.hardware,
             "noise_policy": "upstream_single_cuda_generator_batched_latents; same prompt seed, not identical SGI noise",
             "update_indexing": "zero_based_enumerate", "max_sequence_length": 512,
             "reward_assets": self.reward_assets, "gradient_checkpointing": True}
+        self.metadata["memory_policy"] = self.residency.metadata() if self.residency else {"policy": "resident"}
         self.metadata["reward_worker"] = self.client.worker_metadata
 
     def generate_group(self, prompt, seed):
@@ -70,9 +64,11 @@ class SatisDiveAdapter:
         calls = []
         original = self.client.reward_and_grad
         def checked(images, prompts):
-            if self.shared_gpu:
-                torch.cuda.empty_cache()
-            values, gradient = original(images, prompts)
+            if self.residency:
+                with self.residency.reward_phase(images):
+                    values, gradient = original(images, prompts)
+            else:
+                values, gradient = original(images, prompts)
             if not all(math.isfinite(x) for x in values) or not torch.isfinite(gradient).all():
                 raise RuntimeError("Non-finite reward/gradient from HPSv3")
             calls.append({**getattr(self.client, "last_profile", {}),
@@ -85,7 +81,7 @@ class SatisDiveAdapter:
                     b["height"], b["width"], b["steps"], self.device, torch.bfloat16, seed,
                     set(s["update_steps"]), None, None, None, 1.0, 1.0, s["update_multiplier"], None,
                     s["noise_amplitude"], reward_ramp=True, clone_dud=True, clone_start_p=0.5,
-                    tau_relmax_offset=s["delta"], delta_scale=1.0, verbose=False)
+                    tau_relmax_offset=s["delta"], delta_scale=1.0, verbose=True)
             # Upstream may catch final scoring failures. Record them, but a failed
             # steering gradient must never be presented as a successful generation.
             for rec in diag["steps"]:

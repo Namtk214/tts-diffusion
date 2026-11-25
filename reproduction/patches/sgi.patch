@@ -10,17 +10,17 @@ index 6b02f70..3c10732 100644
 +    diagnostics=None,
  ):
      """Run group inference with progressive pruning for diverse, high-quality image generation.
- 
+
 @@ -99,6 +101,9 @@ def run_group_inference(
      device = pipe._execution_device
- 
+
      lora_scale = None
 +    # Benchmark hooks only: preserve candidate identities and optionally use the
 +    # original FLUX VAE at the final decode. Native callers remain unchanged.
 +    candidate_ids = list(range(starting_candidates))
      has_neg_prompt = negative_prompt is not None
      do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
- 
+
 @@ -173,6 +178,9 @@ def run_group_inference(
      # 6. Denoising loop
      with pipe.progress_bar(total=num_inference_steps) as progress_bar:
@@ -45,10 +45,10 @@ index 6b02f70..3c10732 100644
 +                    diagnostics[-1].update({"selected_candidate_ids": list(candidate_ids), "solver": solver_record})
              else:
                  l_latents = next_latents
- 
+
 @@ -269,8 +282,9 @@ def run_group_inference(
      pipe._current_timestep = None
- 
+
      l_images = [pipe._unpack_latents(_latent, height, width, pipe.vae_scale_factor) for _latent in l_latents]
 -    l_images = [(latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor for latents in l_images]
 -    l_images = [pipe.vae.decode(_image, return_dict=False)[0] for _image in l_images]
@@ -57,10 +57,10 @@ index 6b02f70..3c10732 100644
 +    l_images = [output_vae.decode(_image, return_dict=False)[0] for _image in l_images]
      l_images_tensor = [image.clamp(-1, 1) for image in l_images]  # Keep tensor version for scoring
      l_images = [pipe.image_processor.postprocess(image, output_type="pil")[0] for image in l_images]
- 
+
 @@ -290,4 +304,6 @@ def run_group_inference(
      print("=" * 50)
- 
+
      pipe.maybe_free_model_hooks()
 +    if diagnostics is not None:
 +        diagnostics.append({"final_candidate_ids": list(candidate_ids)})
@@ -72,17 +72,17 @@ index 2e639a2..de2c896 100644
 @@ -1,7 +1,8 @@
  from gurobipy import Model, GRB, quicksum
 +import math
- 
- 
+
+
 -def gurobi_solver(u, D, n_select, lam=1.0, time_limit=5.0):
 +def gurobi_solver(u, D, n_select, lam=1.0, time_limit=5.0, diagnostics=None):
      """Solve quadratic integer programming problem for subset selection with unary and pairwise terms.
- 
+
      Args:
 @@ -28,6 +29,19 @@ def gurobi_solver(u, D, n_select, lam=1.0, time_limit=5.0):
- 
+
      model.setObjective(linear_part + quadratic_part, GRB.MAXIMIZE)
- 
+
 -    model.optimize()
 -    selected_indices = [i for i in range(n) if x[i].X > 0.5]
 -    return selected_indices
@@ -102,3 +102,26 @@ index 2e639a2..de2c896 100644
 +        return selected_indices
 +    finally:
 +        model.dispose()
+diff --git a/src/my_utils/group_inference.py b/src/my_utils/group_inference.py
+index 3c10732..b489311 100644
+--- a/src/my_utils/group_inference.py
++++ b/src/my_utils/group_inference.py
+@@ -70,6 +70,7 @@ def run_group_inference(
+     skip_first_cfg=True,
+     final_vae=None,
+     diagnostics=None,
++    execution_device=None,
+ ):
+     """Run group inference with progressive pruning for diverse, high-quality image generation.
+
+@@ -98,7 +99,9 @@ def run_group_inference(
+     pipe._interrupt = False
+     pipe._joint_attention_kwargs = {}
+
+-    device = pipe._execution_device
++    # Offloaded text encoders live on CPU between prompts. The adapter passes
++    # the allocated CUDA device explicitly instead of inferring it from them.
++    device = torch.device(execution_device) if execution_device is not None else pipe._execution_device
+
+     lora_scale = None
+     # Benchmark hooks only: preserve candidate identities and optionally use the

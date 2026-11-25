@@ -70,6 +70,7 @@ def run_group_inference(
     skip_first_cfg=True,
     final_vae=None,
     diagnostics=None,
+    execution_device=None,
 ):
     """Run group inference with progressive pruning for diverse, high-quality image generation.
 
@@ -98,7 +99,9 @@ def run_group_inference(
     pipe._interrupt = False
     pipe._joint_attention_kwargs = {}
 
-    device = pipe._execution_device
+    # Offloaded text encoders live on CPU between prompts. The adapter passes
+    # the allocated CUDA device explicitly instead of inferring it from them.
+    device = torch.device(execution_device) if execution_device is not None else pipe._execution_device
 
     lora_scale = None
     # Benchmark hooks only: preserve candidate identities and optionally use the

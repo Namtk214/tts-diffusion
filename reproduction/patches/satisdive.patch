@@ -9,13 +9,13 @@ index 5a568d6..3061ee0 100644
 +import selectors
  from pathlib import Path
  from typing import List, Sequence
- 
+
 @@ -42,11 +43,12 @@ class RewardClient:
          self.proc = proc
          self.tmp_dir = Path(tmp_dir)
          self._req = 0
 +        self._stdout_buffer = b""
- 
+
      # ------------------------------------------------------------------ spawn
      @classmethod
      def _spawn(cls, worker_script, worker_python, worker_site, gpu_id, tmp_prefix,
@@ -43,7 +43,7 @@ index 5a568d6..3061ee0 100644
 +            client.close()
 +            raise
          return client
- 
+
      def _await_ready(self, warmup_s: float) -> None:
 @@ -97,7 +104,7 @@ class RewardClient:
          warmup_s = float(os.environ.get("REWARD_WORKER_WARMUP_S", warmup_s))
@@ -64,7 +64,7 @@ index 5a568d6..3061ee0 100644
                  self.proc.terminate()
 @@ -123,10 +131,10 @@ class RewardClient:
                            "hpsv3_", shm=False, warmup_s=warmup_s)
- 
+
      @classmethod
 -    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":
 +    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0, *, park_model: bool = False) -> "RewardClient":
@@ -72,7 +72,7 @@ index 5a568d6..3061ee0 100644
          return cls._spawn(_WORKERS / "hpsv3_grad_worker.py", HPSV3_PYTHON, HPSV3_SITE, gpu_id,
 -                          "hpsv3_grad_", shm=True, warmup_s=warmup_s)
 +                          "hpsv3_grad_", shm=True, warmup_s=warmup_s, park_model=park_model)
- 
+
      @classmethod
      def imagereward_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":
 @@ -179,6 +187,7 @@ class RewardClient:
@@ -85,7 +85,7 @@ index 5a568d6..3061ee0 100644
                  os.unlink(p)
 @@ -192,7 +201,7 @@ class RewardClient:
          self.proc.stdin.flush()
- 
+
      def _recv(self) -> dict:
 -        line = self.proc.stdout.readline()
 +        line = self._readline(float(os.environ.get("REWARD_WORKER_REQUEST_TIMEOUT_S", "600")))
@@ -95,7 +95,7 @@ index 5a568d6..3061ee0 100644
 @@ -200,6 +209,24 @@ class RewardClient:
              raise RuntimeError(f"reward worker error: {msg['error']}\n{msg.get('trace', '')}")
          return msg
- 
+
 +    def _readline(self, timeout):
 +        deadline = time.monotonic() + timeout
 +        with selectors.DefaultSelector() as selector:
@@ -135,15 +135,15 @@ index 584f80a..8fa5669 100644
 +++ b/implementation/flux/rewards/workers/hpsv3_grad_worker.py
 @@ -3,6 +3,7 @@
  from __future__ import annotations
- 
+
  import json
 +import os
  import sys
  import time
  import traceback
 @@ -27,6 +28,7 @@ def _differentiable_reward(inferencer, image: torch.Tensor, prompt: str) -> torc
- 
- 
+
+
  def main():
 +    park_model = os.environ.get("TTS_PARK_HPSV3") == "1"
      _log("loading differentiable HPSv3...")
@@ -168,12 +168,12 @@ index 584f80a..8fa5669 100644
 +    _send({"ready": True, "metadata": {"packages": versions,
 +        "attention_implementation": getattr(inf.model.config, "_attn_implementation", None),
 +        "device": torch.cuda.get_device_name()}})
- 
+
      for line in sys.stdin:
          line = line.strip()
 @@ -55,6 +69,8 @@ def main():
              break
- 
+
          try:
 +            if park_model:
 +                inf.model.to("cuda")
@@ -181,7 +181,7 @@ index 584f80a..8fa5669 100644
              prompts = req["prompts"]
              out_pt = req["out_pt"]
 @@ -68,6 +84,7 @@ def main():
- 
+
              rewards = []
              grads = torch.zeros_like(imgs)
 +            torch.cuda.reset_peak_memory_stats()
@@ -190,7 +190,7 @@ index 584f80a..8fa5669 100644
              #
 @@ -95,9 +112,20 @@ def main():
                  grads[i] = gi.detach()
- 
+
              torch.save(grads.cpu(), out_pt)
 -            _send({"rewards": rewards, "grad_pt": out_pt})
 +            if not torch.isfinite(grads).all() or not all(__import__('math').isfinite(r) for r in rewards):
@@ -208,15 +208,15 @@ index 584f80a..8fa5669 100644
 +                inf.model.to("cpu")
 +                torch.cuda.empty_cache()
 +        _send(response)
- 
+
      _log("exiting")
- 
+
 diff --git a/third_party/HPSv3/hpsv3/inference.py b/third_party/HPSv3/hpsv3/inference.py
 index d00169f..6bf2ee7 100644
 --- a/third_party/HPSv3/hpsv3/inference.py
 +++ b/third_party/HPSv3/hpsv3/inference.py
 @@ -13,6 +13,10 @@ _MODEL_CONFIG_PATH = Path(__file__).parent / f"config/"
- 
+
  class HPSv3RewardInferencer():
      def __init__(self, config_path=None, checkpoint_path=None, device='cuda', differentiable=False):
 +        # Reproduction adapter supplies pinned local assets; upstream behavior is
@@ -226,3 +226,90 @@ index d00169f..6bf2ee7 100644
          if config_path is None:
                  config_path = os.path.join(_MODEL_CONFIG_PATH, 'HPSv3_7B.yaml')
                  
+diff --git a/implementation/flux/ours.py b/implementation/flux/ours.py
+index 20dfa7b..4d89866 100644
+--- a/implementation/flux/ours.py
++++ b/implementation/flux/ours.py
+@@ -207,6 +207,8 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
+
+
+             dimg_rew, feat_rows = [], []
++            batch_rewards = getattr(pipe, "_tts_batch_rewards", False)
++            reward_images = []
+             x0_first_norm = []      # ||x0_1st|| per particle (fidelity ref)
+             x0_corr_rel = []        # ||x0_2nd - x0_1st|| / ||x0_1st|| (2nd-order correction size)
+             used_2nd = bool(v_prev is not None)   # 2nd-order actually applied?
+@@ -233,13 +235,21 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
+                     bmin, bmax = float(imgk.min()), float(imgk.max())
+                     img_min = bmin if img_min is None else min(img_min, bmin)
+                     img_max = bmax if img_max is None else max(img_max, bmax)
+-                    rew_k, dimg_k = client.reward_and_grad(imgk.float(), [prompt])
+-                    rewards[kk] = float(rew_k[0])
+                     v_all[kk] = vk.detach().to(dtype)
+-                    # NaN/inf guard on the worker gradient (cross-process; can return junk)
+-                    dimg_k = torch.nan_to_num(dimg_k.to(imgk.device, imgk.dtype))
+-                    dimg_rew.append(dimg_k)                               # d r_k / d image_k
+-                    feat_rows.append(feat_k)                             # (1,dim)
++                    feat_rows.append(feat_k)
++                    if batch_rewards:
++                        reward_images.append(imgk.float())
++                    else:
++                        rew_k, dimg_k = client.reward_and_grad(imgk.float(), [prompt])
++                        rewards[kk] = float(rew_k[0])
++                        dimg_rew.append(torch.nan_to_num(dimg_k.to(imgk.device, imgk.dtype)))
++                if batch_rewards:
++                    # The worker still evaluates and differentiates one image at
++                    # a time. Only the cross-process residency boundary is grouped.
++                    values, gradients = client.reward_and_grad(torch.cat(reward_images), [prompt] * k)
++                    rewards.copy_(torch.tensor(values, device=device, dtype=rewards.dtype))
++                    dimg_rew = list(torch.nan_to_num(gradients.to(device=device, dtype=imgk.dtype)).split(1))
++                    del reward_images, gradients
+
+             feat_det = torch.cat(feat_rows, 0)                     # (K,dim) detached features
+             r = rewards.float()
+@@ -463,6 +473,7 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
+             if clone_dud and k > 1 and p >= clone_start_p:
+                 with torch.no_grad():
+                     r_cd = torch.zeros(k, device=device)
++                    clone_images = []
+                     for kk in range(k):
+                         vkk = predict_velocity(pipe, latents[kk:kk + 1], t, _slice_ps(ps, kk)).to(torch.float32)
+                         n_fwd += 1
+@@ -473,8 +484,15 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
+                         x0kk = latents[kk:kk + 1].to(torch.float32) - s_curr * v_use
+                         imgkk = decode_to_image(pipe, x0kk, height, width)
+                         n_decode += 1
+-                        rk, _ = client.reward_and_grad(imgkk.float(), [prompt])
+-                        r_cd[kk] = float(rk[0])
++                        if batch_rewards:
++                            clone_images.append(imgkk.float())
++                        else:
++                            rk, _ = client.reward_and_grad(imgkk.float(), [prompt])
++                            r_cd[kk] = float(rk[0])
++                    if batch_rewards:
++                        values, _ = client.reward_and_grad(torch.cat(clone_images), [prompt] * k)
++                        r_cd.copy_(torch.tensor(values, device=device, dtype=r_cd.dtype))
++                        del clone_images
+                     q_cd = torch.sigmoid((r_cd - tau_v) / beta_r_v)
+                     acc = q_cd > 0.5                  # steering-accepted (r > tau) = donor pool
+                     # DUD bar: a particle is a clone TARGET only if its reward is below
+@@ -630,11 +648,14 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
+     final_rewards = None
+     try:
+         with torch.no_grad():
+-            fr = []
+-            for j in range(imgs.shape[0]):
+-                rj, _ = client.reward_and_grad(imgs[j:j + 1].float(), [prompt])
+-                fr.append(float(rj[0]))
+-            final_rewards = fr
++            if getattr(pipe, "_tts_batch_rewards", False):
++                final_rewards, _ = client.reward_and_grad(imgs.float(), [prompt] * len(imgs))
++            else:
++                fr = []
++                for j in range(imgs.shape[0]):
++                    rj, _ = client.reward_and_grad(imgs[j:j + 1].float(), [prompt])
++                    fr.append(float(rj[0]))
++                final_rewards = fr
+     except Exception as e:                                  # never let scoring kill a good run
+         log(f"  !! final-image scoring failed ({type(e).__name__}: {e}); images still saved")
+     final_summary = None

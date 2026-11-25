@@ -207,6 +207,8 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
 
 
             dimg_rew, feat_rows = [], []
+            batch_rewards = getattr(pipe, "_tts_batch_rewards", False)
+            reward_images = []
             x0_first_norm = []      # ||x0_1st|| per particle (fidelity ref)
             x0_corr_rel = []        # ||x0_2nd - x0_1st|| / ||x0_1st|| (2nd-order correction size)
             used_2nd = bool(v_prev is not None)   # 2nd-order actually applied?
@@ -233,13 +235,21 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
                     bmin, bmax = float(imgk.min()), float(imgk.max())
                     img_min = bmin if img_min is None else min(img_min, bmin)
                     img_max = bmax if img_max is None else max(img_max, bmax)
-                    rew_k, dimg_k = client.reward_and_grad(imgk.float(), [prompt])
-                    rewards[kk] = float(rew_k[0])
                     v_all[kk] = vk.detach().to(dtype)
-                    # NaN/inf guard on the worker gradient (cross-process; can return junk)
-                    dimg_k = torch.nan_to_num(dimg_k.to(imgk.device, imgk.dtype))
-                    dimg_rew.append(dimg_k)                               # d r_k / d image_k
-                    feat_rows.append(feat_k)                             # (1,dim)
+                    feat_rows.append(feat_k)
+                    if batch_rewards:
+                        reward_images.append(imgk.float())
+                    else:
+                        rew_k, dimg_k = client.reward_and_grad(imgk.float(), [prompt])
+                        rewards[kk] = float(rew_k[0])
+                        dimg_rew.append(torch.nan_to_num(dimg_k.to(imgk.device, imgk.dtype)))
+                if batch_rewards:
+                    # The worker still evaluates and differentiates one image at
+                    # a time. Only the cross-process residency boundary is grouped.
+                    values, gradients = client.reward_and_grad(torch.cat(reward_images), [prompt] * k)
+                    rewards.copy_(torch.tensor(values, device=device, dtype=rewards.dtype))
+                    dimg_rew = list(torch.nan_to_num(gradients.to(device=device, dtype=imgk.dtype)).split(1))
+                    del reward_images, gradients
 
             feat_det = torch.cat(feat_rows, 0)                     # (K,dim) detached features
             r = rewards.float()
@@ -463,6 +473,7 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
             if clone_dud and k > 1 and p >= clone_start_p:
                 with torch.no_grad():
                     r_cd = torch.zeros(k, device=device)
+                    clone_images = []
                     for kk in range(k):
                         vkk = predict_velocity(pipe, latents[kk:kk + 1], t, _slice_ps(ps, kk)).to(torch.float32)
                         n_fwd += 1
@@ -473,8 +484,15 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
                         x0kk = latents[kk:kk + 1].to(torch.float32) - s_curr * v_use
                         imgkk = decode_to_image(pipe, x0kk, height, width)
                         n_decode += 1
-                        rk, _ = client.reward_and_grad(imgkk.float(), [prompt])
-                        r_cd[kk] = float(rk[0])
+                        if batch_rewards:
+                            clone_images.append(imgkk.float())
+                        else:
+                            rk, _ = client.reward_and_grad(imgkk.float(), [prompt])
+                            r_cd[kk] = float(rk[0])
+                    if batch_rewards:
+                        values, _ = client.reward_and_grad(torch.cat(clone_images), [prompt] * k)
+                        r_cd.copy_(torch.tensor(values, device=device, dtype=r_cd.dtype))
+                        del clone_images
                     q_cd = torch.sigmoid((r_cd - tau_v) / beta_r_v)
                     acc = q_cd > 0.5                  # steering-accepted (r > tau) = donor pool
                     # DUD bar: a particle is a clone TARGET only if its reward is below
@@ -630,11 +648,14 @@ def run_ours_one_prompt(pipe, client, capture, prompt, k, height, width, num_ste
     final_rewards = None
     try:
         with torch.no_grad():
-            fr = []
-            for j in range(imgs.shape[0]):
-                rj, _ = client.reward_and_grad(imgs[j:j + 1].float(), [prompt])
-                fr.append(float(rj[0]))
-            final_rewards = fr
+            if getattr(pipe, "_tts_batch_rewards", False):
+                final_rewards, _ = client.reward_and_grad(imgs.float(), [prompt] * len(imgs))
+            else:
+                fr = []
+                for j in range(imgs.shape[0]):
+                    rj, _ = client.reward_and_grad(imgs[j:j + 1].float(), [prompt])
+                    fr.append(float(rj[0]))
+                final_rewards = fr
     except Exception as e:                                  # never let scoring kill a good run
         log(f"  !! final-image scoring failed ({type(e).__name__}: {e}); images still saved")
     final_summary = None

@@ -24,7 +24,7 @@ def main():
         directory = a.prefix.absolute() / name
         python = directory / "bin/python"
         if not python.exists():
-            subprocess.run(["uv", "venv", "--seed", "--python", "3.12" if name == "satisdive" else "3.10", str(directory)], check=True)
+            subprocess.run(["uv", "venv", "--seed", "--python", "3.12" if name == "satisdive" else ("3.11" if name == "sgi" else "3.10"), str(directory)], check=True)
         requirement = ROOT / ("requirements.txt" if name == "controller" else f"environments/{name}.txt")
         command = ["uv", "pip", "install", "--python", str(python), "-r", str(requirement)]
         if name == "geneval":
