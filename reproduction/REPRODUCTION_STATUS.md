@@ -1,6 +1,6 @@
 # Reproduction status
 
-**Current 768 × 768 experiment:** [Single A100 setup and pilot](SINGLE_GPU.md). This profile uses 100 Pick-a-Pic prompts and 50 GenEval prompts. GPU validation is pending. The original protocols are documented below.
+**Current 768 × 768 experiment:** [Single A100 setup and pilot](SINGLE_GPU.md). This profile uses 30 Pick-a-Pic prompts and 30 GenEval prompts (480 final images). GPU validation is pending. The original protocols are documented below.
 
 
 Date: 2026-11-25. **Implementation prepared; runtime validation and all experiments deferred to the rented VM.** This document is not a result report.

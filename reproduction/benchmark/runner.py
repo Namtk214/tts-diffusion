@@ -18,7 +18,7 @@ def parser():
     p.add_argument("--config", required=True, type=Path)
     p.add_argument("--dataset", required=True, choices=("pickapic", "geneval", "hpdv2"))
     p.add_argument("--manifest", type=Path)
-    p.add_argument("--subset-size", type=int, default=100)
+    p.add_argument("--subset-size", type=int, help="Default: 30 for single_gpu_768, 100 for other protocols")
     p.add_argument("--limit", type=int)
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
@@ -42,7 +42,8 @@ def plan(args, config_override=None):
     if shared and cfg["method"] == "satisdive" and args.reward_device != generator_index:
         raise ValueError("single_gpu_768 uses the generator GPU for HPSv3")
     cfg = resolve_models(cfg, args.models_lock)
-    manifest = args.manifest or ROOT / "data" / f"{args.dataset}_{args.subset_size}.jsonl"
+    subset_size = args.subset_size if args.subset_size is not None else (30 if shared else 100)
+    manifest = args.manifest or ROOT / "data" / f"{args.dataset}_{subset_size}.jsonl"
     rows = read_manifest(manifest)
     if any(r["dataset"] != args.dataset for r in rows):
         raise ValueError("Dataset flag disagrees with prompt manifest")
