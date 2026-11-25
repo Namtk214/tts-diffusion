@@ -1,0 +1,13 @@
+# SGI upstream pins diffusers; remaining versions are an explicit integration environment.
+-r ../requirements.txt
+torch==2.8.0
+torchvision==0.23.0
+diffusers==0.35.1
+transformers==4.56.2
+accelerate==1.10.1
+sentencepiece==0.2.1
+protobuf==3.20.3
+gurobipy==12.0.1
+opencv-python-headless==4.11.0.86
+safetensors==0.6.2
+pytest==8.3.5

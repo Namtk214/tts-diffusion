@@ -1,0 +1,29 @@
+{
+  "protocol": "unified",
+  "method": "sgi",
+  "models_lock": "configs/models.lock.json",
+  "backbone": {
+    "id": "black-forest-labs/FLUX.1-dev",
+    "revision": null,
+    "height": 1024,
+    "width": 1024,
+    "steps": 28,
+    "guidance_scale": 3.5,
+    "dtype": "bfloat16"
+  },
+  "generation": {
+    "seed": 42,
+    "group_size": 4,
+    "final_decoder": "standard_flux",
+    "sampler": "native"
+  },
+  "sgi": {
+    "reward": "clip",
+    "diversity": "dino_patch",
+    "initial_candidates": 128,
+    "dropping_ratio": 0.5,
+    "lambda_score": 1.5,
+    "preview_decoder": "native",
+    "solver": "gurobi"
+  }
+}

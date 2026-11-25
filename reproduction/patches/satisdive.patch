@@ -1,0 +1,163 @@
+diff --git a/implementation/flux/rewards/clients.py b/implementation/flux/rewards/clients.py
+index 5a568d6..a90c77b 100644
+--- a/implementation/flux/rewards/clients.py
++++ b/implementation/flux/rewards/clients.py
+@@ -9,6 +9,7 @@ import subprocess
+ import sys
+ import tempfile
+ import time
++import selectors
+ from pathlib import Path
+ from typing import List, Sequence
+ 
+@@ -42,6 +43,7 @@ class RewardClient:
+         self.proc = proc
+         self.tmp_dir = Path(tmp_dir)
+         self._req = 0
++        self._stdout_buffer = b""
+ 
+     # ------------------------------------------------------------------ spawn
+     @classmethod
+@@ -88,7 +90,11 @@ class RewardClient:
+             env=env, text=True, bufsize=1,
+         )
+         client = cls(proc, tmp_dir)
+-        client._await_ready(warmup_s)
++        try:
++            client._await_ready(warmup_s)
++        except Exception:
++            client.close()
++            raise
+         return client
+ 
+     def _await_ready(self, warmup_s: float) -> None:
+@@ -97,7 +103,7 @@ class RewardClient:
+         warmup_s = float(os.environ.get("REWARD_WORKER_WARMUP_S", warmup_s))
+         deadline = time.time() + warmup_s
+         while time.time() < deadline:
+-            line = self.proc.stdout.readline()
++            line = self._readline(max(1.0, deadline - time.time()))
+             if not line:
+                 if self.proc.poll() is not None:
+                     raise RuntimeError(
+@@ -108,6 +114,7 @@ class RewardClient:
+             except json.JSONDecodeError:
+                 continue
+             if msg.get("ready"):
++                self.worker_metadata = msg.get("metadata", {})
+                 return
+             if "error" in msg:
+                 self.proc.terminate()
+@@ -179,6 +186,7 @@ class RewardClient:
+         self._send({"image_pt": image_pt, "prompts": list(prompts), "out_pt": out_pt})
+         msg = self._recv()
+         grad = torch.load(msg["grad_pt"], map_location="cpu")
++        self.last_profile = msg.get("profiling", {})
+         for p in (image_pt, out_pt):
+             try:
+                 os.unlink(p)
+@@ -192,7 +200,7 @@ class RewardClient:
+         self.proc.stdin.flush()
+ 
+     def _recv(self) -> dict:
+-        line = self.proc.stdout.readline()
++        line = self._readline(float(os.environ.get("REWARD_WORKER_REQUEST_TIMEOUT_S", "600")))
+         if not line:
+             raise RuntimeError(f"reward worker closed stdout (exit {self.proc.poll()})")
+         msg = json.loads(line)
+@@ -200,6 +208,24 @@ class RewardClient:
+             raise RuntimeError(f"reward worker error: {msg['error']}\n{msg.get('trace', '')}")
+         return msg
+ 
++    def _readline(self, timeout):
++        deadline = time.monotonic() + timeout
++        with selectors.DefaultSelector() as selector:
++            selector.register(self.proc.stdout, selectors.EVENT_READ)
++            while b"\n" not in self._stdout_buffer:
++                remaining = max(0, deadline-time.monotonic())
++                if not selector.select(remaining):
++                    self.proc.kill()
++                    self.proc.wait(timeout=10)
++                    raise TimeoutError(f"Reward worker response exceeded {timeout:.1f}s")
++                block = os.read(self.proc.stdout.fileno(), 65536)
++                if not block:
++                    line, self._stdout_buffer = self._stdout_buffer, b""
++                    return line.decode("utf-8")
++                self._stdout_buffer += block
++            line, self._stdout_buffer = self._stdout_buffer.split(b"\n", 1)
++            return line.decode("utf-8") + "\n"
++
+     def close(self) -> None:
+         if self.proc.poll() is None:
+             try:
+@@ -208,6 +234,11 @@ class RewardClient:
+                     self.proc.wait(timeout=5)
+                 except subprocess.TimeoutExpired:
+                     self.proc.terminate()
++                    try:
++                        self.proc.wait(timeout=10)
++                    except subprocess.TimeoutExpired:
++                        self.proc.kill()
++                        self.proc.wait(timeout=10)
+             except (BrokenPipeError, OSError):
+                 self.proc.terminate()
+         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+diff --git a/implementation/flux/rewards/workers/hpsv3_grad_worker.py b/implementation/flux/rewards/workers/hpsv3_grad_worker.py
+index 584f80a..2421192 100644
+--- a/implementation/flux/rewards/workers/hpsv3_grad_worker.py
++++ b/implementation/flux/rewards/workers/hpsv3_grad_worker.py
+@@ -37,7 +37,16 @@ def main():
+                "trace": traceback.format_exc()})
+         sys.exit(1)
+     _log(f"loaded in {time.time()-t0:.1f}s")
+-    _send({"ready": True})
++    import importlib.metadata
++    versions = {}
++    for name in ("torch", "torchvision", "transformers", "peft", "trl", "flash-attn"):
++        try:
++            versions[name] = importlib.metadata.version(name)
++        except importlib.metadata.PackageNotFoundError:
++            versions[name] = None
++    _send({"ready": True, "metadata": {"packages": versions,
++        "attention_implementation": getattr(inf.model.config, "_attn_implementation", None),
++        "device": torch.cuda.get_device_name()}})
+ 
+     for line in sys.stdin:
+         line = line.strip()
+@@ -68,6 +77,7 @@ def main():
+ 
+             rewards = []
+             grads = torch.zeros_like(imgs)
++            torch.cuda.reset_peak_memory_stats()
+             # Score one image at a time: HPSv3 (Qwen2-VL-7B) at high res OOMs if
+             # K 1024^2 images are batched (same reason hpsv3_worker scores singly).
+             #
+@@ -95,7 +105,12 @@ def main():
+                 grads[i] = gi.detach()
+ 
+             torch.save(grads.cpu(), out_pt)
+-            _send({"rewards": rewards, "grad_pt": out_pt})
++            if not torch.isfinite(grads).all() or not all(__import__('math').isfinite(r) for r in rewards):
++                raise RuntimeError("Non-finite HPSv3 reward/gradient")
++            _send({"rewards": rewards, "grad_pt": out_pt,
++                   "profiling": {"reward_forward_calls": K, "reward_backward_calls": K,
++                                 "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
++                                 "peak_reserved_bytes": torch.cuda.max_memory_reserved()}})
+         except Exception as e:
+             _send({"error": str(e), "trace": traceback.format_exc()})
+ 
+diff --git a/third_party/HPSv3/hpsv3/inference.py b/third_party/HPSv3/hpsv3/inference.py
+index d00169f..6bf2ee7 100644
+--- a/third_party/HPSv3/hpsv3/inference.py
++++ b/third_party/HPSv3/hpsv3/inference.py
+@@ -13,6 +13,10 @@ _MODEL_CONFIG_PATH = Path(__file__).parent / f"config/"
+ 
+ class HPSv3RewardInferencer():
+     def __init__(self, config_path=None, checkpoint_path=None, device='cuda', differentiable=False):
++        # Reproduction adapter supplies pinned local assets; upstream behavior is
++        # unchanged when these optional environment variables are absent.
++        config_path = config_path or os.environ.get("TTS_HPSV3_CONFIG")
++        checkpoint_path = checkpoint_path or os.environ.get("TTS_HPSV3_CHECKPOINT")
+         if config_path is None:
+                 config_path = os.path.join(_MODEL_CONFIG_PATH, 'HPSv3_7B.yaml')
+                 

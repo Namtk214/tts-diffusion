@@ -1,0 +1,12 @@
+-r ../requirements.txt
+torch==2.6.0
+torchvision==0.21.0
+transformers==4.45.2
+accelerate==1.2.1
+peft==0.13.2
+dreamsim==0.2.1
+lpips==0.1.4
+open-clip-torch==2.24.0
+timm==0.9.16
+scipy==1.15.2
+pytest==8.3.5

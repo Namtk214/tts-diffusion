@@ -1,0 +1,35 @@
+{
+  "protocol": "unified",
+  "method": "satisdive",
+  "models_lock": "configs/models.lock.json",
+  "backbone": {
+    "id": "black-forest-labs/FLUX.1-dev",
+    "revision": null,
+    "height": 1024,
+    "width": 1024,
+    "steps": 28,
+    "guidance_scale": 3.5,
+    "dtype": "bfloat16"
+  },
+  "generation": {
+    "seed": 42,
+    "group_size": 4,
+    "final_decoder": "standard_flux",
+    "sampler": "native"
+  },
+  "satisdive": {
+    "reward": "hpsv3",
+    "delta": 1.5,
+    "noise_amplitude": 0.3,
+    "update_steps": [
+      4,
+      8,
+      12,
+      16,
+      20,
+      24
+    ],
+    "feature_layer": 12,
+    "update_multiplier": 1.0
+  }
+}

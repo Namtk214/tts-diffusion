@@ -1,0 +1,16 @@
+# Released SatisDive generation stack. Default PyPI Torch wheel uses CUDA 13.0.
+torch==2.11.0
+torchvision==0.26.0
+diffusers==0.38.0
+transformers==5.8.0
+accelerate==1.13.0
+numpy==2.4.4
+pillow==12.2.0
+safetensors==0.8.0rc0
+tokenizers==0.22.2
+sentencepiece==0.2.1
+protobuf==3.20.3
+# transformers 5.8 requires hub >=1.5; cannot share the Qwen/HPSv3 environment.
+huggingface-hub==1.5.0
+PyYAML==6.0.2
+requests==2.32.3

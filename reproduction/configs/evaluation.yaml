@@ -1,0 +1,15 @@
+schema: 1
+metrics: [hpsv3, hpsv2, image_reward, pickscore, clip_score, dreamsim, dino, lpips]
+hpsv2_version: v2.0
+pickscore_definition: scaled_cosine_logit
+clip_preprocess: sgi_bilinear_224
+vendi_kernel: normalized_dino_patch_gram
+lpips_net: alex
+lpips_version: '0.1'
+lpips_resize: 256
+dreamsim_type: ensemble
+sat:
+  hpsv3_scale_verified: false
+  verification_note: null
+  thresholds: {pickapic: 9.66, hpdv2: 13.93, geneval: null}
+bootstrap: {resamples: 1000, seed: 12345, confidence: 0.95}

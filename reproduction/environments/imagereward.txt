@@ -1,0 +1,10 @@
+-r ../requirements.txt
+torch==2.6.0
+torchvision==0.21.0
+image-reward==1.5
+transformers==4.45.2
+diffusers==0.32.2
+accelerate==1.2.1
+timm==0.6.13
+fairscale==0.4.13
+datasets==3.6.0

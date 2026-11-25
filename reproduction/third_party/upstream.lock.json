@@ -1,0 +1,12 @@
+{
+  "satisdive": {
+    "url": "https://github.com/UCF-CRCV/SatisDive.git",
+    "commit": "4497035086015ef946b5799c5f5139aca913302c",
+    "vendored_path": "reproduction/third_party/satisdive"
+  },
+  "sgi": {
+    "url": "https://github.com/GaParmar/group-inference.git",
+    "commit": "a1fff209d3796df16d87a7876c5076721ccb1772",
+    "vendored_path": "reproduction/third_party/sgi"
+  }
+}
