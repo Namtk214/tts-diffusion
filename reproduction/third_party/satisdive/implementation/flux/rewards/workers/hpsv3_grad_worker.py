@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -27,6 +28,7 @@ def _differentiable_reward(inferencer, image: torch.Tensor, prompt: str) -> torc
 
 
 def main():
+    park_model = os.environ.get("TTS_PARK_HPSV3") == "1"
     _log("loading differentiable HPSv3...")
     t0 = time.time()
     try:
@@ -36,6 +38,9 @@ def main():
         _send({"error": f"failed to load differentiable HPSv3: {e}",
                "trace": traceback.format_exc()})
         sys.exit(1)
+    if park_model:
+        inf.model.requires_grad_(False).to("cpu")
+        torch.cuda.empty_cache()
     _log(f"loaded in {time.time()-t0:.1f}s")
     import importlib.metadata
     versions = {}
@@ -64,6 +69,8 @@ def main():
             break
 
         try:
+            if park_model:
+                inf.model.to("cuda")
             image_pt = req["image_pt"]
             prompts = req["prompts"]
             out_pt = req["out_pt"]
@@ -107,12 +114,18 @@ def main():
             torch.save(grads.cpu(), out_pt)
             if not torch.isfinite(grads).all() or not all(__import__('math').isfinite(r) for r in rewards):
                 raise RuntimeError("Non-finite HPSv3 reward/gradient")
-            _send({"rewards": rewards, "grad_pt": out_pt,
+            response = {"rewards": rewards, "grad_pt": out_pt,
                    "profiling": {"reward_forward_calls": K, "reward_backward_calls": K,
                                  "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-                                 "peak_reserved_bytes": torch.cuda.max_memory_reserved()}})
+                                 "peak_reserved_bytes": torch.cuda.max_memory_reserved()}}
+            del imgs, grads, xi, xi255, out, ri, gi
         except Exception as e:
-            _send({"error": str(e), "trace": traceback.format_exc()})
+            response = {"error": str(e), "trace": traceback.format_exc()}
+        finally:
+            if park_model:
+                inf.model.to("cpu")
+                torch.cuda.empty_cache()
+        _send(response)
 
     _log("exiting")
 

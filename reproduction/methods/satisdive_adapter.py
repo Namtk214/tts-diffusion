@@ -12,7 +12,8 @@ class SatisDiveAdapter:
     def __init__(self, config, device="cuda:0", reward_device=1, work_dir=None, profile_flops=False):
         import torch
         from diffusers import FluxPipeline
-        self.hardware = require_cuda(device, reward_device)
+        self.shared_gpu = config["protocol"] == "single_gpu_768"
+        self.hardware = require_cuda(device, reward_device, shared=self.shared_gpu)
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         self.config, self.device, self.reward_device, self.profile_flops = config, device, reward_device, profile_flops
@@ -36,7 +37,26 @@ class SatisDiveAdapter:
         self.capture = ours._Block12Capture(num_generated_tokens=(b["height"]//16)*(b["width"]//16),
             block_idx=12, grid=1, h_tok=b["height"]//16, w_tok=b["width"]//16)
         self.pipe.transformer.transformer_blocks[12].attn.processor = self.capture
-        self.client = RewardClient.hpsv3_grad(gpu_id=reward_device)
+        # Keep text encoder weights in host RAM between prompts. The GPU
+        # computes the same prompt embeddings once before denoising.
+        if self.shared_gpu:
+            encoders = (self.pipe.text_encoder, self.pipe.text_encoder_2)
+            encode_prompt = self.pipe.encode_prompt
+            for encoder in encoders:
+                encoder.to("cpu")
+            @torch.no_grad()
+            def encode_then_park(*args, **kwargs):
+                try:
+                    for encoder in encoders:
+                        encoder.to(device)
+                    return encode_prompt(*args, **kwargs)
+                finally:
+                    for encoder in encoders:
+                        encoder.to("cpu")
+                    torch.cuda.empty_cache()
+            self.pipe.encode_prompt = encode_then_park
+            torch.cuda.empty_cache()
+        self.client = RewardClient.hpsv3_grad(gpu_id=reward_device, park_model=self.shared_gpu)
         self.metadata = {"scheduler": dict(self.pipe.scheduler.config), "hardware": self.hardware,
             "noise_policy": "upstream_single_cuda_generator_batched_latents; same prompt seed, not identical SGI noise",
             "update_indexing": "zero_based_enumerate", "max_sequence_length": 512,
@@ -50,6 +70,8 @@ class SatisDiveAdapter:
         calls = []
         original = self.client.reward_and_grad
         def checked(images, prompts):
+            if self.shared_gpu:
+                torch.cuda.empty_cache()
             values, gradient = original(images, prompts)
             if not all(math.isfinite(x) for x in values) or not torch.isfinite(gradient).all():
                 raise RuntimeError("Non-finite reward/gradient from HPSv3")
@@ -58,7 +80,7 @@ class SatisDiveAdapter:
             return values, gradient
         self.client.reward_and_grad = checked
         try:
-            with GenerationMeter(self.pipe, self.device, gpu_count=2, profile_flops=self.profile_flops) as meter:
+            with GenerationMeter(self.pipe, self.device, gpu_count=len(self.hardware), profile_flops=self.profile_flops) as meter:
                 images, rewards, diag = self.run(self.pipe, self.client, self.capture, prompt, 4,
                     b["height"], b["width"], b["steps"], self.device, torch.bfloat16, seed,
                     set(s["update_steps"]), None, None, None, 1.0, 1.0, s["update_multiplier"], None,

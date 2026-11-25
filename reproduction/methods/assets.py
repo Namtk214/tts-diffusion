@@ -28,7 +28,7 @@ def prepare_hpsv3_assets(models, directory):
     return {"checkpoint": str(checkpoint), "qwen_snapshot": qwen, "config": str(target)}
 
 
-def require_cuda(device, reward_device=None):
+def require_cuda(device, reward_device=None, *, shared=False):
     import torch
     import platform
     if platform.system() != "Linux" or not torch.cuda.is_available() or not str(device).startswith("cuda"):
@@ -36,8 +36,8 @@ def require_cuda(device, reward_device=None):
     index = torch.device(device).index or 0
     if index >= torch.cuda.device_count():
         raise ValueError("Generation device is outside the visible GPU allocation")
-    if reward_device is not None and (reward_device == index or not 0 <= reward_device < torch.cuda.device_count()):
-        raise ValueError("SatisDive FLUX/HPSv3 requires two distinct allocated GPUs; single-GPU offload is not implemented")
+    if reward_device is not None and ((reward_device == index) != shared or not 0 <= reward_device < torch.cuda.device_count()):
+        raise ValueError("Reward device must be visible and match the generation device only for the single_gpu_768 protocol")
     torch.cuda.set_device(index)
     return [{"index": i, "name": torch.cuda.get_device_name(i),
              "total_memory_bytes": torch.cuda.get_device_properties(i).total_memory}

@@ -30,8 +30,8 @@ def validate_config(config):
         raise ValueError("Configuration must be a mapping")
     c = copy.deepcopy(config)
     method = c.get("method")
-    if method not in ("satisdive", "sgi") or c.get("protocol") not in ("native", "unified"):
-        raise ValueError("Only native/unified SatisDive and SGI are supported")
+    if method not in ("satisdive", "sgi") or c.get("protocol") not in ("native", "unified", "single_gpu_768"):
+        raise ValueError("Unknown benchmark protocol or method")
     # An inactive block cannot affect either the run hash or execution.
     c.pop("sgi" if method == "satisdive" else "satisdive", None)
     allowed = {"protocol", "method", "backbone", "generation", method, "models_lock"}
@@ -59,6 +59,8 @@ def validate_config(config):
         raise ValueError("Seed must be an integer in [0, 2**63)")
     if c["protocol"] == "unified" and (b["height"], b["width"], b["steps"], g["final_decoder"]) != (1024, 1024, 28, "standard_flux"):
         raise ValueError("Unified protocol requires 1024 square, 28 steps, standard FLUX final VAE")
+    if c["protocol"] == "single_gpu_768" and (b["height"], b["width"], b["steps"], g["final_decoder"]) != (768, 768, 28, "standard_flux"):
+        raise ValueError("Single GPU protocol requires 768 square, 28 steps and standard FLUX VAE")
     if method == "satisdive":
         s = c[method]
         if s["reward"] != "hpsv3" or s["feature_layer"] != 12 or s["update_multiplier"] != 1.0 or s["noise_amplitude"] != 0.3:

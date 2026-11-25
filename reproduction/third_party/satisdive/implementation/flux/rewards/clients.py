@@ -48,7 +48,7 @@ class RewardClient:
     # ------------------------------------------------------------------ spawn
     @classmethod
     def _spawn(cls, worker_script, worker_python, worker_site, gpu_id, tmp_prefix,
-               shm: bool, warmup_s: float) -> "RewardClient":
+               shm: bool, warmup_s: float, park_model: bool = False) -> "RewardClient":
         if not Path(worker_python).exists():
             raise FileNotFoundError(f"reward worker Python not found: {worker_python}")
         if not Path(worker_script).exists():
@@ -59,6 +59,7 @@ class RewardClient:
         tmp_dir = Path(tempfile.mkdtemp(prefix=tmp_prefix,
                                         dir="/dev/shm" if shm else None))
         env = os.environ.copy()
+        env["TTS_PARK_HPSV3"] = "1" if park_model else "0"
         # site-packages of the worker's venv FIRST (so its torch/transformers/
         # ImageReward win), then the rewards package root (for image_reward_compat).
         # We never pass the launcher's own PYTHONPATH, so the flux venv's
@@ -130,10 +131,10 @@ class RewardClient:
                           "hpsv3_", shm=False, warmup_s=warmup_s)
 
     @classmethod
-    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":
+    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0, *, park_model: bool = False) -> "RewardClient":
         """Differentiable HPSv3 (ours floor term / DAS reward-gradient proposal)."""
         return cls._spawn(_WORKERS / "hpsv3_grad_worker.py", HPSV3_PYTHON, HPSV3_SITE, gpu_id,
-                          "hpsv3_grad_", shm=True, warmup_s=warmup_s)
+                          "hpsv3_grad_", shm=True, warmup_s=warmup_s, park_model=park_model)
 
     @classmethod
     def imagereward_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":

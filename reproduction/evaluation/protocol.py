@@ -29,11 +29,13 @@ def metric_python(name):
 
 def load_eval_config(path):
     c = yaml.safe_load(Path(path).read_text())
-    if c.get("schema") != 1 or set(c["metrics"]) != set(METRICS) or len(c["metrics"]) != len(METRICS):
+    if c.get("schema") != 1 or not c["metrics"] or not set(c["metrics"]) <= set(METRICS) or len(set(c["metrics"])) != len(c["metrics"]):
         raise ValueError("Evaluation config must define each shared metric exactly once")
     expected = {"pickscore_definition": "scaled_cosine_logit", "clip_preprocess": "sgi_bilinear_224",
-                "vendi_kernel": "normalized_dino_patch_gram", "lpips_net": "alex",
+                "lpips_net": "alex",
                 "lpips_version": "0.1", "lpips_resize": 256, "dreamsim_type": "ensemble"}
+    if c["vendi_kernel"] not in (None, "normalized_dino_patch_gram"):
+        raise ValueError("Unsupported Vendi kernel")
     if any(c.get(k) != v for k, v in expected.items()) or c["hpsv2_version"] not in ("v2.0", "v2.1"):
         raise ValueError("Unsupported metric definition; implement and document it before changing config")
     if c["sat"]["thresholds"] != {"pickapic": 9.66, "hpdv2": 13.93, "geneval": None}:

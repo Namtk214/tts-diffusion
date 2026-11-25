@@ -59,9 +59,10 @@ class DiversityScorer:
                 tensors = [to_tensor(im).unsqueeze(0).to(self.device)*2-1 for im in images]
                 features = dino_patches(tensors, self.model, self.device)
                 distances = patch_distance(features).cpu().numpy()
-                flat = F.normalize(F.normalize(features, dim=-1).flatten(1), dim=-1).double()
-                kernel = (flat @ flat.T).cpu().numpy()
-                extra = {"vendi": vendi_from_kernel(kernel), "vendi_kernel": kernel.tolist()}
+                if self.config["vendi_kernel"]:
+                    flat = F.normalize(F.normalize(features, dim=-1).flatten(1), dim=-1).double()
+                    kernel = (flat @ flat.T).cpu().numpy()
+                    extra = {"vendi": vendi_from_kernel(kernel), "vendi_kernel": kernel.tolist()}
                 values = [float(distances[i, j]) for i, j in PAIRS]
             elif self.name == "dreamsim":
                 tensors = [self.preprocess(im).to(self.device) for im in images]

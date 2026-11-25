@@ -1,5 +1,5 @@
 diff --git a/implementation/flux/rewards/clients.py b/implementation/flux/rewards/clients.py
-index 5a568d6..a90c77b 100644
+index 5a568d6..3061ee0 100644
 --- a/implementation/flux/rewards/clients.py
 +++ b/implementation/flux/rewards/clients.py
 @@ -9,6 +9,7 @@ import subprocess
@@ -10,7 +10,7 @@ index 5a568d6..a90c77b 100644
  from pathlib import Path
  from typing import List, Sequence
  
-@@ -42,6 +43,7 @@ class RewardClient:
+@@ -42,11 +43,12 @@ class RewardClient:
          self.proc = proc
          self.tmp_dir = Path(tmp_dir)
          self._req = 0
@@ -18,7 +18,21 @@ index 5a568d6..a90c77b 100644
  
      # ------------------------------------------------------------------ spawn
      @classmethod
-@@ -88,7 +90,11 @@ class RewardClient:
+     def _spawn(cls, worker_script, worker_python, worker_site, gpu_id, tmp_prefix,
+-               shm: bool, warmup_s: float) -> "RewardClient":
++               shm: bool, warmup_s: float, park_model: bool = False) -> "RewardClient":
+         if not Path(worker_python).exists():
+             raise FileNotFoundError(f"reward worker Python not found: {worker_python}")
+         if not Path(worker_script).exists():
+@@ -57,6 +59,7 @@ class RewardClient:
+         tmp_dir = Path(tempfile.mkdtemp(prefix=tmp_prefix,
+                                         dir="/dev/shm" if shm else None))
+         env = os.environ.copy()
++        env["TTS_PARK_HPSV3"] = "1" if park_model else "0"
+         # site-packages of the worker's venv FIRST (so its torch/transformers/
+         # ImageReward win), then the rewards package root (for image_reward_compat).
+         # We never pass the launcher's own PYTHONPATH, so the flux venv's
+@@ -88,7 +91,11 @@ class RewardClient:
              env=env, text=True, bufsize=1,
          )
          client = cls(proc, tmp_dir)
@@ -31,7 +45,7 @@ index 5a568d6..a90c77b 100644
          return client
  
      def _await_ready(self, warmup_s: float) -> None:
-@@ -97,7 +103,7 @@ class RewardClient:
+@@ -97,7 +104,7 @@ class RewardClient:
          warmup_s = float(os.environ.get("REWARD_WORKER_WARMUP_S", warmup_s))
          deadline = time.time() + warmup_s
          while time.time() < deadline:
@@ -40,7 +54,7 @@ index 5a568d6..a90c77b 100644
              if not line:
                  if self.proc.poll() is not None:
                      raise RuntimeError(
-@@ -108,6 +114,7 @@ class RewardClient:
+@@ -108,6 +115,7 @@ class RewardClient:
              except json.JSONDecodeError:
                  continue
              if msg.get("ready"):
@@ -48,7 +62,20 @@ index 5a568d6..a90c77b 100644
                  return
              if "error" in msg:
                  self.proc.terminate()
-@@ -179,6 +186,7 @@ class RewardClient:
+@@ -123,10 +131,10 @@ class RewardClient:
+                           "hpsv3_", shm=False, warmup_s=warmup_s)
+ 
+     @classmethod
+-    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":
++    def hpsv3_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0, *, park_model: bool = False) -> "RewardClient":
+         """Differentiable HPSv3 (ours floor term / DAS reward-gradient proposal)."""
+         return cls._spawn(_WORKERS / "hpsv3_grad_worker.py", HPSV3_PYTHON, HPSV3_SITE, gpu_id,
+-                          "hpsv3_grad_", shm=True, warmup_s=warmup_s)
++                          "hpsv3_grad_", shm=True, warmup_s=warmup_s, park_model=park_model)
+ 
+     @classmethod
+     def imagereward_grad(cls, gpu_id: int = 0, warmup_s: float = 300.0) -> "RewardClient":
+@@ -179,6 +187,7 @@ class RewardClient:
          self._send({"image_pt": image_pt, "prompts": list(prompts), "out_pt": out_pt})
          msg = self._recv()
          grad = torch.load(msg["grad_pt"], map_location="cpu")
@@ -56,7 +83,7 @@ index 5a568d6..a90c77b 100644
          for p in (image_pt, out_pt):
              try:
                  os.unlink(p)
-@@ -192,7 +200,7 @@ class RewardClient:
+@@ -192,7 +201,7 @@ class RewardClient:
          self.proc.stdin.flush()
  
      def _recv(self) -> dict:
@@ -65,7 +92,7 @@ index 5a568d6..a90c77b 100644
          if not line:
              raise RuntimeError(f"reward worker closed stdout (exit {self.proc.poll()})")
          msg = json.loads(line)
-@@ -200,6 +208,24 @@ class RewardClient:
+@@ -200,6 +209,24 @@ class RewardClient:
              raise RuntimeError(f"reward worker error: {msg['error']}\n{msg.get('trace', '')}")
          return msg
  
@@ -90,7 +117,7 @@ index 5a568d6..a90c77b 100644
      def close(self) -> None:
          if self.proc.poll() is None:
              try:
-@@ -208,6 +234,11 @@ class RewardClient:
+@@ -208,6 +235,11 @@ class RewardClient:
                      self.proc.wait(timeout=5)
                  except subprocess.TimeoutExpired:
                      self.proc.terminate()
@@ -103,12 +130,32 @@ index 5a568d6..a90c77b 100644
                  self.proc.terminate()
          shutil.rmtree(self.tmp_dir, ignore_errors=True)
 diff --git a/implementation/flux/rewards/workers/hpsv3_grad_worker.py b/implementation/flux/rewards/workers/hpsv3_grad_worker.py
-index 584f80a..2421192 100644
+index 584f80a..8fa5669 100644
 --- a/implementation/flux/rewards/workers/hpsv3_grad_worker.py
 +++ b/implementation/flux/rewards/workers/hpsv3_grad_worker.py
-@@ -37,7 +37,16 @@ def main():
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++import os
+ import sys
+ import time
+ import traceback
+@@ -27,6 +28,7 @@ def _differentiable_reward(inferencer, image: torch.Tensor, prompt: str) -> torc
+ 
+ 
+ def main():
++    park_model = os.environ.get("TTS_PARK_HPSV3") == "1"
+     _log("loading differentiable HPSv3...")
+     t0 = time.time()
+     try:
+@@ -36,8 +38,20 @@ def main():
+         _send({"error": f"failed to load differentiable HPSv3: {e}",
                 "trace": traceback.format_exc()})
          sys.exit(1)
++    if park_model:
++        inf.model.requires_grad_(False).to("cpu")
++        torch.cuda.empty_cache()
      _log(f"loaded in {time.time()-t0:.1f}s")
 -    _send({"ready": True})
 +    import importlib.metadata
@@ -124,7 +171,16 @@ index 584f80a..2421192 100644
  
      for line in sys.stdin:
          line = line.strip()
-@@ -68,6 +77,7 @@ def main():
+@@ -55,6 +69,8 @@ def main():
+             break
+ 
+         try:
++            if park_model:
++                inf.model.to("cuda")
+             image_pt = req["image_pt"]
+             prompts = req["prompts"]
+             out_pt = req["out_pt"]
+@@ -68,6 +84,7 @@ def main():
  
              rewards = []
              grads = torch.zeros_like(imgs)
@@ -132,19 +188,28 @@ index 584f80a..2421192 100644
              # Score one image at a time: HPSv3 (Qwen2-VL-7B) at high res OOMs if
              # K 1024^2 images are batched (same reason hpsv3_worker scores singly).
              #
-@@ -95,7 +105,12 @@ def main():
+@@ -95,9 +112,20 @@ def main():
                  grads[i] = gi.detach()
  
              torch.save(grads.cpu(), out_pt)
 -            _send({"rewards": rewards, "grad_pt": out_pt})
 +            if not torch.isfinite(grads).all() or not all(__import__('math').isfinite(r) for r in rewards):
 +                raise RuntimeError("Non-finite HPSv3 reward/gradient")
-+            _send({"rewards": rewards, "grad_pt": out_pt,
++            response = {"rewards": rewards, "grad_pt": out_pt,
 +                   "profiling": {"reward_forward_calls": K, "reward_backward_calls": K,
 +                                 "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-+                                 "peak_reserved_bytes": torch.cuda.max_memory_reserved()}})
++                                 "peak_reserved_bytes": torch.cuda.max_memory_reserved()}}
++            del imgs, grads, xi, xi255, out, ri, gi
          except Exception as e:
-             _send({"error": str(e), "trace": traceback.format_exc()})
+-            _send({"error": str(e), "trace": traceback.format_exc()})
++            response = {"error": str(e), "trace": traceback.format_exc()}
++        finally:
++            if park_model:
++                inf.model.to("cpu")
++                torch.cuda.empty_cache()
++        _send(response)
+ 
+     _log("exiting")
  
 diff --git a/third_party/HPSv3/hpsv3/inference.py b/third_party/HPSv3/hpsv3/inference.py
 index d00169f..6bf2ee7 100644

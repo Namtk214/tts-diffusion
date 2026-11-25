@@ -14,14 +14,19 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--method", choices=("sgi", "satisdive"), required=True)
     p.add_argument("--device", default="cuda:0")
-    p.add_argument("--reward-device", type=int, default=1)
+    p.add_argument("--protocol", choices=("unified", "single_gpu_768"), default="unified")
+    p.add_argument("--reward-device", type=int)
     p.add_argument("--models-lock", type=Path, default=ROOT / "configs/models.lock.json")
     p.add_argument("--check-solver", action="store_true", help="Solve a synthetic 128-variable QIP to check license capacity")
     a = p.parse_args()
-    hardware = require_cuda(a.device, a.reward_device if a.method == "satisdive" else None)
+    shared = a.protocol == "single_gpu_768"
+    reward_device = a.reward_device
+    if reward_device is None:
+        reward_device = int(a.device.partition(":")[2] or 0) if shared else 1
+    hardware = require_cuda(a.device, reward_device if a.method == "satisdive" else None, shared=shared)
     for module in ("torch", "torchvision", "diffusers", "transformers"):
         importlib.import_module(module)
-    cfg = resolve_models(load_config(ROOT / f"configs/unified/{a.method}.yaml"), a.models_lock)
+    cfg = resolve_models(load_config(ROOT / f"configs/{a.protocol}/{a.method}.yaml"), a.models_lock)
     snapshots = {name: cached_model(entry) for name, entry in cfg["model_revisions"].items()}
     solver = None
     if a.method == "sgi":

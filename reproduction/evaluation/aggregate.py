@@ -43,12 +43,14 @@ def bootstrap(values, resamples=1000, seed=12345, confidence=0.95, categories=No
 
 
 def summarize_rows(groups, manifest, eval_id, config):
-    metrics = [f"{name}_{agg}" for name in REWARDS for agg in ("mean", "min")]
+    metrics = [f"{name}_{agg}" for name in REWARDS if name in config["metrics"] for agg in ("mean", "min")]
     metrics += ["hpsv3_sat", "dreamsim", "dino_distance", "lpips", "vendi", "geneval_accuracy",
                 "runtime_s", "candidate_weighted_forward_nfe", "denoiser_forward_calls", "guidance_autograd_calls",
                 "reward_forward_calls", "reward_backward_calls", "allocated_gpu_seconds", "profiled_flops",
                 "peak_allocated_generator_bytes", "peak_allocated_reward_worker_bytes", "resident_peak_sum_mib",
                 "peak_reserved_generator_bytes", "peak_reserved_reward_worker_bytes", "gpu_count", "solver_runtime_s", "solver_time_limit_hits"]
+    if not config["vendi_kernel"]:
+        metrics.remove("vendi")
     output = []
     expected = len(groups)
     base = {"run_id": manifest["run_id"], "eval_id": eval_id, "method": manifest["method"],
@@ -88,7 +90,7 @@ def aggregate_run(run_dir, config, lock):
     manifest = read_json(run_dir / "run_manifest.json")
     prompts = read_manifest(run_dir / "prompts.jsonl")
     ids, unresolved = {}, {}
-    for metric in METRICS:
+    for metric in config["metrics"]:
         try:
             ids[metric] = metric_identity(metric, config, lock)[0]
         except (OSError, ValueError, KeyError) as error:
@@ -127,7 +129,7 @@ def aggregate_run(run_dir, config, lock):
         images = [{**base, "candidate_id": im["candidate_id"], "image_path": str((source / im["filename"]).relative_to(run_dir))} for im in group["images"]]
         pairs = [{**base, "candidate_a": group["images"][i]["candidate_id"], "candidate_b": group["images"][j]["candidate_id"]} for i, j in PAIRS]
         missing = []
-        for metric in (*METRICS, *(("geneval",) if manifest["dataset"] == "geneval" else ())):
+        for metric in (*config["metrics"], *(("geneval",) if manifest["dataset"] == "geneval" else ())):
             mid = ids.get(metric)
             root = run_dir / ("evaluation/geneval" if metric == "geneval" else f"evaluation/cache/{metric}")
             path = root / (mid or "missing") / f"{pid}.json"
@@ -158,7 +160,7 @@ def aggregate_run(run_dir, config, lock):
                 for i in range(6):
                     pairs[i][key] = values[i]
                 result[key] = float(np.mean(values))
-                if metric == "dino":
+                if metric == "dino" and config["vendi_kernel"]:
                     result["vendi"] = data["vendi"]
         result["missing_metrics"] = ";".join(missing)
         result["evaluation_status"] = "complete" if not missing else "incomplete"

@@ -14,7 +14,7 @@ from evaluation.aggregate import aggregate_run
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-dir", required=True, type=Path)
-    p.add_argument("--eval-config", type=Path, default=ROOT / "configs/evaluation.yaml")
+    p.add_argument("--eval-config", type=Path)
     p.add_argument("--models-lock", type=Path, default=ROOT / "configs/models.lock.json")
     p.add_argument("--metrics", nargs="+", choices=(*METRICS, "geneval"), help="Optional partial evaluation; reports show missing metrics")
     p.add_argument("--device", default="cuda:0")
@@ -27,9 +27,14 @@ def main():
     if a.num_shards < 1 or not 0 <= a.shard_index < a.num_shards or a.limit is not None and a.limit < 1:
         p.error("Invalid shard or limit")
     a.run_dir = a.run_dir.absolute()
-    cfg, lock = load_eval_config(a.eval_config), read_json(a.models_lock)
     manifest = read_json(a.run_dir / "run_manifest.json")
-    metrics = a.metrics or list(METRICS) + (["geneval"] if manifest["dataset"] == "geneval" else [])
+    if a.eval_config is None:
+        base = ROOT / "configs"
+        if manifest["protocol"] == "single_gpu_768":
+            base = base / "single_gpu_768"
+        a.eval_config = base / "evaluation.yaml"
+    cfg, lock = load_eval_config(a.eval_config), read_json(a.models_lock)
+    metrics = a.metrics or list(cfg["metrics"]) + (["geneval"] if manifest["dataset"] == "geneval" else [])
     failures = []
     if not a.aggregate_only:
         for metric in metrics:

@@ -1,5 +1,8 @@
 # SatisDive / SGI reproduction framework
 
+**Current 768 × 768 experiment:** [Single A100 setup and pilot](SINGLE_GPU.md). This profile uses 100 Pick-a-Pic prompts and 50 GenEval prompts. GPU validation is pending. The original protocols are documented below.
+
+
 Implementation status: **prepared for VM validation; no experiments run**. The local machine has only undergone static syntax/config checks. Dataset/model downloads and CPU/GPU tests are deferred at the user's request. Read [REPRODUCTION_STATUS.md](REPRODUCTION_STATUS.md) before interpreting any settings as paper-verified.
 
 ## Scope and defaults

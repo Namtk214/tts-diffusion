@@ -25,7 +25,7 @@ def parser():
     p.add_argument("--resume", action="store_true")
     p.add_argument("--reuse-run", type=Path, help="Reuse a complete identical run, allowing only the native/unified label to differ")
     p.add_argument("--device", default="cuda:0")
-    p.add_argument("--reward-device", type=int, default=1, help="Logical GPU in CUDA_VISIBLE_DEVICES")
+    p.add_argument("--reward-device", type=int, help="Logical GPU (single_gpu_768: generator GPU; other protocols: 1)")
     p.add_argument("--outputs", type=Path, default=ROOT / "outputs")
     p.add_argument("--models-lock", type=Path)
     p.add_argument("--plan", action="store_true", help="Validate config/manifest/lock; do not import model libraries")
@@ -35,6 +35,12 @@ def parser():
 
 def plan(args, config_override=None):
     cfg = validate_config(config_override) if config_override is not None else load_config(args.config)
+    generator_index = int(args.device.partition(":")[2] or 0)
+    shared = cfg["protocol"] == "single_gpu_768"
+    if args.reward_device is None:
+        args.reward_device = generator_index if shared else 1
+    if shared and cfg["method"] == "satisdive" and args.reward_device != generator_index:
+        raise ValueError("single_gpu_768 uses the generator GPU for HPSv3")
     cfg = resolve_models(cfg, args.models_lock)
     manifest = args.manifest or ROOT / "data" / f"{args.dataset}_{args.subset_size}.jsonl"
     rows = read_manifest(manifest)
@@ -162,7 +168,7 @@ def execute(args, config_override=None, adapter_factory=None):
                     if args.resume and validate_group(directory / "images" / pid, manifest["config_hash"], row, size):
                         continue
                     device_indices = [int(args.device.split(":")[-1]) if ":" in args.device else 0]
-                    if cfg["method"] == "satisdive":
+                    if cfg["method"] == "satisdive" and args.reward_device not in device_indices:
                         device_indices.append(args.reward_device)
                     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
                     physical = [visible[i].strip() if visible != [""] else str(i) for i in device_indices]
