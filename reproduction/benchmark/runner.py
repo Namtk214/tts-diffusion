@@ -23,7 +23,8 @@ def parser():
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--resume", action="store_true")
-    p.add_argument("--reuse-run", type=Path, help="Reuse a complete identical run, allowing only the native/unified label to differ")
+    p.add_argument("--reuse-run", type=Path, help="Reuse valid prompt groups from a prior compatible run")
+    p.add_argument("--reuse-equivalent-code-change", help="Allow reuse across code fingerprints and record the specific equivalence reason")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--reward-device", type=int, help="Logical GPU (single_gpu_768: generator GPU; other protocols: 1)")
     p.add_argument("--outputs", type=Path, default=ROOT / "outputs")
@@ -79,22 +80,29 @@ def refresh_stats(directory, rows):
     return {s: sum(r["status"] == s for r in records) for s in ("complete", "failed", "not_run")}
 
 
-def reuse_run(source, destination, manifest, rows, size):
+def reuse_run(source, destination, manifest, rows, size, equivalent_code_change=None):
     from PIL import Image
     old = read_json(source / "run_manifest.json")
     old_cfg, new_cfg = dict(old["config"]), dict(manifest["config"])
     old_cfg.pop("protocol"); new_cfg.pop("protocol")
-    if old_cfg != new_cfg or old["prompts_sha256"] != manifest["prompts_sha256"] or old["implementation_sha256"] != manifest["implementation_sha256"]:
-        raise ValueError("Reuse requires identical scientific configuration, code and prompt manifest")
-    if old["status"] != "complete":
-        raise ValueError("Only a complete run can be reused")
+    code_changed = old["implementation_sha256"] != manifest["implementation_sha256"]
+    if old_cfg != new_cfg or old["prompts_sha256"] != manifest["prompts_sha256"]:
+        raise ValueError("Reuse requires identical scientific configuration and prompt manifest")
+    if code_changed and not equivalent_code_change:
+        raise ValueError("Implementation differs; pass --reuse-equivalent-code-change with a specific, auditable reason only when generated groups remain equivalent")
+    if old["status"] != "complete" and not equivalent_code_change:
+        raise ValueError("Only complete runs can be reused without an explicit code equivalence note")
+    reused_prompt_ids = []
     for row in rows:
         with exclusive_lock(destination / ".locks" / f"{row['prompt_id']}.lock"):
             if validate_group(destination / "images" / row["prompt_id"], manifest["config_hash"], row, size):
+                reused_prompt_ids.append(row["prompt_id"])
                 continue
             folder = source / "images" / row["prompt_id"]
             if not validate_group(folder, old["config_hash"], row, size):
-                raise ValueError(f"Source group is corrupt: {row['prompt_id']}")
+                if equivalent_code_change:
+                    continue
+                raise ValueError(f"Source group is missing or corrupt: {row['prompt_id']}")
             previous = read_json(folder / "group.json")
             info = {k: v for k, v in previous.items() if k not in ("images", "prompt", "config_hash", "status", "schema")}
             info["reused_from"] = {"run_id": old["run_id"], "directory": str(source.absolute()),
@@ -106,7 +114,15 @@ def reuse_run(source, destination, manifest, rows, size):
             commit_group(destination, row, images, info, manifest["config_hash"], size)
             atomic_json(destination / "records" / f"{row['prompt_id']}.json",
                         {"prompt_id": row["prompt_id"], "status": "complete", **info["stats"], "reused_from": old["run_id"]})
-    atomic_json(destination / "reuse_provenance.json", {"source_manifest": old, "source_directory": str(source.absolute())})
+            reused_prompt_ids.append(row["prompt_id"])
+    atomic_json(destination / "reuse_provenance.json", {
+        "source_manifest": old,
+        "source_directory": str(source.absolute()),
+        "source_implementation_sha256": old["implementation_sha256"],
+        "destination_implementation_sha256": manifest["implementation_sha256"],
+        "equivalent_code_change": equivalent_code_change,
+        "reused_prompt_ids": reused_prompt_ids,
+    })
 
 
 def execute(args, config_override=None, adapter_factory=None):
@@ -128,7 +144,10 @@ def execute(args, config_override=None, adapter_factory=None):
             write_jsonl(directory / "prompts.jsonl", rows)
     size = (cfg["backbone"]["width"], cfg["backbone"]["height"])
     if args.reuse_run:
-        reuse_run(args.reuse_run, directory, manifest, worker_rows, size)
+        reuse_run(args.reuse_run, directory, manifest, worker_rows, size,
+                  equivalent_code_change=args.reuse_equivalent_code_change)
+    elif args.reuse_equivalent_code_change is not None:
+        raise ValueError("--reuse-equivalent-code-change requires --reuse-run")
     pending = [r for r in worker_rows if not ((args.resume or args.reuse_run) and validate_group(directory / "images" / r["prompt_id"],
                                                 manifest["config_hash"], r, size))]
     # Repair status records from committed groups after a crash between commit and status write.
