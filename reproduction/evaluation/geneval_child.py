@@ -14,11 +14,13 @@ def connect(sock, address):
     return original_connect(sock, address)
 socket.socket.connect = connect
 import open_clip
-original_create = open_clip.create_model_and_transforms
-def create(*args, **kwargs):
-    if kwargs.get("pretrained") == "openai":
-        kwargs["pretrained"] = clip_checkpoint
-    return original_create(*args, **kwargs)
-open_clip.create_model_and_transforms = create
+from open_clip import openai as openai_loader
+
+def offline_download(url, cache_dir=None):
+    if not url.endswith("/ViT-L-14.pt"):
+        raise ValueError(f"Unexpected GenEval CLIP checkpoint URL: {url}")
+    return clip_checkpoint
+
+openai_loader.download_pretrained_from_url = offline_download
 sys.argv = [script, *arguments]
 runpy.run_path(script, run_name="__main__")
