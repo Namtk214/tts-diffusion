@@ -70,7 +70,7 @@ class RewardScorer:
                 self.model = CLIPModel.from_pretrained(cached_model(models["clip"]), local_files_only=True).eval().to(device)
                 self.processor = CLIPProcessor.from_pretrained(cached_model(models["clip"]), local_files_only=True)
                 self.metadata.update(score="cosine, no scale or clamp", preprocessing="SGI bilinear 224, native normalization",
-                                     text_policy="native tokenizer without truncation; overlong prompts fail visibly")
+                                     text_policy="CLIP context truncation at 77 tokens for long captions")
             self.metadata["precision"] = "float32"
         else:
             raise ValueError(f"Unknown reward {name}")
@@ -99,7 +99,9 @@ class RewardScorer:
                 x = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
                 mean = x.new_tensor([0.48145466, 0.4578275, 0.40821073])[None, :, None, None]
                 std = x.new_tensor([0.26862954, 0.26130258, 0.27577711])[None, :, None, None]
-                text = self.processor.tokenizer(prompt, return_tensors="pt", padding=True).to(self.device)
+                text = self.processor.tokenizer(
+                    prompt, return_tensors="pt", padding=True, truncation=True, max_length=77
+                ).to(self.device)
                 output = self.model(pixel_values=(x-mean)/std, **text)
                 return (output.logits_per_image / self.model.logit_scale.exp()).flatten().cpu().tolist()
             inputs = self.processor(images=images, return_tensors="pt").to(self.device)
