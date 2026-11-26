@@ -10,7 +10,7 @@ Only the four final lossless PNGs enter offline evaluation. Generation-time prev
 | `hpsv2` | xswu/HPSv2, `HPS_v2_compressed.pt`, default v2.0; original ViT-H-14 validation transform, fp16 CUDA autocast | Native normalized feature dot product, no ×100. Full strict checkpoint loading replaces the redundant LAION initialization. Exact paper version unresolved; v2.1 requires explicit config change and new metric identity. |
 | `image_reward` | THUDM/ImageReward v1.0; official 224 bicubic center crop, official 35-token text handling; float32 | Official standardized reward. BERT tokenizer is resolved to a pinned local snapshot. |
 | `pickscore` | PickScore_v1 + compatible LAION ViT-H-14 processor; 77-token truncation; float32 | `exp(logit_scale) * cosine(image,text)`. Explicit absolute logit definition; no softmax across a group. Exact paper normalization is not asserted. |
-| `clip_score` | openai/clip-vit-base-patch32; SGI bilinear resize to 224, CLIP normalization; float32 | Text-image cosine, without ×100, positive clamp or learned logit scale. Native SGI tokenizer has no silent truncation: an overlong prompt is a visible failure. |
+| `clip_score` | openai/clip-vit-base-patch32; SGI bilinear resize to 224, CLIP normalization; float32 | Text-image cosine, without ×100, positive clamp or learned logit scale. Text is explicitly truncated to the 77-token CLIP context; generation still uses the full prompt. |
 
 For each reward save all four values, group mean and group minimum. Dataset mean/min columns are the mean of the corresponding group quantities. A metric loader is never replaced by a different available scorer.
 
@@ -39,7 +39,7 @@ The default config has `hpsv3_scale_verified: false`, so SAT is unresolved rathe
 
 GenEval uses the clean official evaluator at commit `af4902f24d3ca90ebbb446dd9891a59e0f82725f`, its default thresholds, Mask2Former Swin-S detector and OpenAI CLIP ViT-L/14. Original `include`/`exclude`/`tag` annotations are retained. Four saved PNGs are staged via symlinks in the official numeric-directory layout. The wrapper changes only asset paths and device visibility. Failed evaluator jobs are logged; no replacement heuristic is used.
 
-`geneval_accuracy` in group CSV is the fraction of four images correct. The summary's overall GenEval score is the **unweighted mean of task/category accuracies**, as in the [official summary script](https://github.com/djghosh13/geneval/blob/af4902f24d3ca90ebbb446dd9891a59e0f82725f/evaluation/summary_scores.py), with per-task rows also exported. If an expected task has no valid results, overall is unresolved. The 100-prompt subset is category-stratified, so it is not the full 553-prompt result.
+`geneval_accuracy` in group CSV is the fraction of four images correct. The summary's overall GenEval score is the **unweighted mean of task/category accuracies**, as in the [official summary script](https://github.com/djghosh13/geneval/blob/af4902f24d3ca90ebbb446dd9891a59e0f82725f/evaluation/summary_scores.py), with per-task rows also exported. If an expected task has no valid results, overall is unresolved. This run uses 30 category-stratified prompts, so it is not the full 553-prompt result.
 
 ## Statistics and coverage
 
