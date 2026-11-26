@@ -99,7 +99,7 @@ Run native smoke tests first. For strict native reproduction, evaluate SatisDive
 | Setting | SatisDive | SGI |
 |---|---|---|
 | Backbone | FLUX.1-dev | FLUX.1-dev |
-| Resolution | 1024×1024 | 1024×1024 |
+| Resolution | 768x768 | 768x768 |
 | Steps | 28 | 28 |
 | Guidance scale | 3.5 | 3.5 |
 | Initial candidates `M` | 4 | 128 |
@@ -126,8 +126,8 @@ method: satisdive                 # or sgi
 backbone:
   id: black-forest-labs/FLUX.1-dev
   revision: null                  # resolve and pin before full runs
-  height: 1024
-  width: 1024
+  height: 768
+  width: 768
   steps: 28
   guidance_scale: 3.5
   dtype: bfloat16                 # subject to upstream compatibility
